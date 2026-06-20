@@ -20,6 +20,66 @@ Sibling docs:
 
 ---
 
+## ⚠️ VERDICT (2026-06) — IddCx cannot load on this HVM; supersedes F1/F4
+
+After taking the IddCx fork all the way to a clean build + correct install, **the
+driver will not LOAD on this Qubes HVM, and the cause is fundamental to IddCx on
+this emulated platform — not anything fixable in the driver.** This supersedes the
+theories in **F1** ("version gate") and **F4** ("LGIdd is Win10-proven"), both
+disproven by experiment.
+
+### Every driver-side hypothesis was eliminated
+
+| Hypothesis | Verdict |
+|---|---|
+| v143 + WDK-NuGet "not a real driver build" | **No** — built with the real `WindowsUserModeDriver10.0` toolset (EWDK 28000); still fails. |
+| IddCx version gate (client > OS 1.5) | **No** — the MS sample at IddCx **1.4** fails identically to LGIdd at 1.10. |
+| The `IddCx0102` extension declaration | **No** — fails with `UmdfExtensions` removed too. |
+| Dynamic CRT | **No** — static-CRT LGIdd build failed; dynamic-UCRT MS build failed. |
+| Missing DLL dependency | **No** — `dumpbin`: all deps Win10-present; PE subsystem 10.00. |
+| Test-signing / publisher trust | **No** — testsigning on, cert in Root+TrustedPublisher, DLL sig Valid. |
+| Missing GPU / render adapter | **No** — Basic *Render* Driver + DxgKrnl + IndirectKmd all healthy/running. |
+| INF settings (class/filter/extension) | **No** — fails with a minimal echo-style INF. |
+
+### The decisive experiment
+
+The MS `IddSampleDriver` DLL (`iddcxstub`-linked) and the WDK `echo` UMDF2 DLL
+(no IddCx), installed with the **identical minimal INF** (Class=System, no
+`UmdfExtensions`, no `IndirectKmd`, explicit `AddService=WUDFRd`):
+
+```
+ROOT\SYSTEM\0001   echo DLL    problem=0    (loads, runs)
+ROOT\SYSTEM\0002   IddCx DLL   problem=31   (2007 / 0xD000000D)
+```
+
+The **only** difference is the `iddcxstub` linkage. A custom-built, test-signed
+UMDF driver loads fine here — *unless* it links IddCx. The UMDF host fails to bind
+the IddCx class extension during host setup, **before it even loads `IddCx.dll`**
+(loader snaps under cdb attached via IFEO show the host loads its framework DLLs
+then `NtTerminateProcess`-exits without ever mapping `IddCx.dll`; `IddCx.dll`
+itself loads fine standalone). The exact internal reason is in Microsoft's
+WUDFx/IddCx code (no public PDBs), but it is not needed: no driver-side change can
+fix a host-side extension-binding failure.
+
+### Consequence — pivot to KMDOD
+
+IddCx is a dead end on `romhacking-hma-driver` as configured. The project pivots
+to the documented Plan B: a **kernel-mode own-framebuffer KMDOD** (WDDM
+display-only miniport that allocates its primary in grant-shareable system RAM).
+The frame-path / grant / dynamic-resolution design (F3 + the integration design in
+[`plan.md`](plan.md)) carries over unchanged.
+
+### Toolchain note (what actually builds drivers here)
+
+The v143 + WDK-NuGet path *compiles* drivers but the real driver build needs the
+**EWDK** (Enterprise WDK 28000 ISO, mounted at `D:`; build via
+`D:\BuildEnv\SetupBuildEnv.cmd` then
+`msbuild /p:PlatformToolset=WindowsUserModeDriver10.0 /p:WindowsTargetPlatformVersion=10.0.28000.0`).
+The guest has devkitPro/MSYS2 that shadows `cmd`/`tar` — always use full
+`C:\Windows\System32\` paths. This carries over to the KMDOD build.
+
+---
+
 ## F1 — Windows 10 is an IddCx 1.5 ceiling
 
 **Claim.** Windows 10 versions 2004 through 22H2 (builds 19041 through 19045,
