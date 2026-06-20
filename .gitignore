@@ -1,0 +1,34 @@
+# Build outputs
+**/x64/
+**/ARM64/
+**/Debug/
+**/Release/
+**/obj/
+*.dll
+*.sys
+*.pdb
+*.obj
+*.cat
+*.lastbuildstate
+*.tlog
+
+# NuGet
+**/packages/
+*.nupkg
+project.assets.json
+*.nuget.g.props
+*.nuget.g.targets
+
+# Signing material (never commit private keys)
+*.cer
+*.pfx
+*.snk
+
+# Guest-side staging scratch
+pkg/
+VersionInfo.h
+
+# Editor / OS
+.vs/
+*.user
+.DS_Store

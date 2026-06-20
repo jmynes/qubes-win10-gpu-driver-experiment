@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    Imported AFTER the WDK NuGet props. Those props set $(WindowsSdkDir) and
+    $(WDKContentRoot) to the package 'c' folder WITHOUT a trailing slash, so a
+    driver .vcxproj that builds paths as "$(WindowsSdkDir)Include\..." gets the
+    broken "...\cInclude\...". The traditional WDK always ends these in '\'.
+    EnsureTrailingSlash here makes "$(WDKContentRoot)Include\..." resolve as
+    "...\c\Include\...". See docs/build-toolchain.md.
+  -->
+  <PropertyGroup>
+    <WindowsSdkDir>$([MSBuild]::EnsureTrailingSlash('$(WindowsSdkDir)'))</WindowsSdkDir>
+    <WDKContentRoot>$([MSBuild]::EnsureTrailingSlash('$(WDKContentRoot)'))</WDKContentRoot>
+  </PropertyGroup>
+</Project>

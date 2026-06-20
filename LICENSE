@@ -1,0 +1,20 @@
+qubes-win10-gpu-driver-experiment
+Copyright (C) 2026 jmynes
+
+SPDX-License-Identifier: GPL-2.0-or-later
+
+This repository is licensed under the GNU General Public License, version 2 or
+(at your option) any later version.
+
+GPL-2.0 is chosen deliberately: the driver developed here is a fork of
+LookingGlass LGIdd (https://looking-glass.io, GPL-2.0-or-later), and it targets
+qubes-gui-agent-windows (also GPL-2.0), so this license keeps the work
+compatible with both upstreams. Build tooling, scripts, and documentation in
+this repository are released under the same terms.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Full license text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+(Replace this file with the full GPL-2.0 text before any public release.)

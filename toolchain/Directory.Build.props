@@ -1,0 +1,53 @@
+<Project>
+  <!--
+    WDK-via-NuGet glue for building an IddCx UMDF driver with *VS Build Tools*
+    (no EWDK, no WDK Visual Studio extension). Drop next to a driver .vcxproj.
+    See docs/build-toolchain.md for the full rationale. Companion file:
+    Directory.Build.targets (fixes the WDKContentRoot/WindowsSdkDir trailing
+    slash AFTER the NuGet props set them).
+
+    Requires the .vcxproj to use PlatformToolset=v143 (NOT the legacy
+    WindowsUserModeDriver10.0, which only exists with the WDK VS extension).
+  -->
+  <PropertyGroup>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <!-- force the modern restore path; without this the project tries the
+         legacy packages.config flow -->
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <!-- the legacy ResolveNuGetPackageAssets task crashes ("Sequence contains
+         no elements") on a native C++ PackageReference project; disable it -->
+    <ResolveNuGetPackages>false</ResolveNuGetPackages>
+    <!-- IDDCX_VERSION_*/UMDF_VERSION_* (the compile/header version) must be
+         defined by the consuming .vcxproj; see docs/build-toolchain.md.
+         IDDCX_STUB_VERSION_* is the client version baked into iddcxstub.lib and
+         checked by the load-time gate; it is decoupled from the compile version
+         (see the Link comment below). Default 1.4 loads on Win10. -->
+    <IDDCX_STUB_VERSION_MAJOR Condition="'$(IDDCX_STUB_VERSION_MAJOR)'==''">1</IDDCX_STUB_VERSION_MAJOR>
+    <IDDCX_STUB_VERSION_MINOR Condition="'$(IDDCX_STUB_VERSION_MINOR)'==''">4</IDDCX_STUB_VERSION_MINOR>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.WDK.x64" Version="10.0.26100.6584" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- $(WindowsSdkDir) points at the *base* SDK, which has no WDK headers
+           (iddcx/wdf/km). Add them explicitly from $(WDKContentRoot) (the NuGet
+           'c' folder). IDDCX/UMDF version macros come from the .vcxproj. -->
+      <AdditionalIncludeDirectories>$(WDKContentRoot)Include\$(WindowsTargetPlatformVersion)\um\iddcx\$(IDDCX_VERSION_MAJOR).$(IDDCX_VERSION_MINOR);$(WDKContentRoot)Include\$(WindowsTargetPlatformVersion)\um;$(WDKContentRoot)Include\$(WindowsTargetPlatformVersion)\shared;$(WDKContentRoot)Include\$(WindowsTargetPlatformVersion)\km;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <!-- the driver toolset auto-links these stubs; under v143 we add them by
+           hand. The iddcxstub.lib embeds the client IddCx version that the
+           load-time gate checks: the driver's effective client version must be
+           <= the OS IddCx framework version (Win10 22H2 = 1.5), so it is
+           decoupled from the (possibly newer) compile/header version in
+           IDDCX_VERSION_*. We observed this empirically: linking the 1.10 stub
+           baked client=1.10 and the driver failed to load on the 1.5 framework
+           (problem code 31 / UMDF host 0xD000000D). Pick the stub via
+           IDDCX_STUB_VERSION_* (default 1.4, which loads on Win10) independently
+           of the include dirs above. ntdll.lib resolves __imp_DbgPrintEx pulled
+           in by the WDF UMDF stub. -->
+      <AdditionalDependencies>$(WDKContentRoot)Lib\wdf\umdf\x64\$(UMDF_VERSION_MAJOR).$(UMDF_VERSION_MINOR)\WdfDriverStubUm.lib;$(WDKContentRoot)Lib\$(WindowsTargetPlatformVersion)\um\x64\iddcx\$(IDDCX_STUB_VERSION_MAJOR).$(IDDCX_STUB_VERSION_MINOR)\iddcxstub.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
