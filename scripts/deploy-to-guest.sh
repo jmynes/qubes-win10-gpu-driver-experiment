@@ -79,9 +79,9 @@ while [[ $# -gt 0 ]]; do
   a="$1"
   case "$a" in
     --build) DO_BUILD=1 ;;
-    -ProjDir) BUILD_PROJDIR="$2"; shift ;;
+    -ProjDir) [[ $# -ge 2 ]] || { echo "deploy-to-guest.sh: -ProjDir needs a value" >&2; exit 2; }; BUILD_PROJDIR="$2"; shift ;;
     -ProjDir=*) BUILD_PROJDIR="${a#*=}" ;;
-    -VcxProj) BUILD_VCXPROJ="$2"; shift ;;
+    -VcxProj) [[ $# -ge 2 ]] || { echo "deploy-to-guest.sh: -VcxProj needs a value" >&2; exit 2; }; BUILD_VCXPROJ="$2"; shift ;;
     -VcxProj=*) BUILD_VCXPROJ="${a#*=}" ;;
     -h|--help)
       # Print the usage header (everything between the shebang and `set -e`).
