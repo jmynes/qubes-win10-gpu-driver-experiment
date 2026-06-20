@@ -16,7 +16,7 @@ the forked driver). It does **not** fix the separate >2-vCPU redraw race (that's
 - **M0b DONE** — risk R1 resolved = **GO** (texture → GPU-copy → CPU buffer; the IddCx system-buffer API is not needed).
 - **IddCx ABANDONED (2026-06)** — proven it cannot LOAD on this HVM: an `iddcxstub`-linked UMDF driver fails (the host can't bind the IddCx class extension on this emulated platform); a non-IddCx UMDF driver loads fine with the identical INF. NOT the toolchain/version/CRT/signing/INF/env — all eliminated. **Read the VERDICT in `docs/findings.md`.**
 - Toolchain that actually builds drivers here: **EWDK 28000** (`WindowsUserModeDriver10.0` toolset), NOT the v143 + WDK-NuGet path.
-- **PIVOT → KMDOD** (kernel-mode own-framebuffer WDDM display-only miniport); the frame-path / grant / dynamic-resolution design carries over.
+- **PIVOT → KMDOD — feasibility gate = GO** (kernel-mode WDDM display-only miniport): the MS KMDOD loads + runs DriverEntry/AddDevice/StartDevice + acquires a POST framebuffer on this HVM (vs IddCx which never loaded). Fixed a real sample bug (`ExAllocatePool2` POOL_TYPE-vs-POOL_FLAGS → `ExAllocatePoolZero`). See `docs/findings.md` "KMDOD pivot". Next: **M1-K own-framebuffer** (own grant-RAM primary + `DxgkDdiPresentDisplayOnly`→our buffer) → M2-K grant to dom0. The frame-path/grant/dynamic-resolution design carries over.
 - `driver/` (LGIdd fork) + `driver-mssample/` (MS-sample baseline) are kept as the IddCx reproduction/endpoint. Milestones: `docs/plan.md`. Results: `docs/findings.md`.
 
 ## ⚠️ IddCx is blocked on this HVM (the load-bearing finding)

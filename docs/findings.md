@@ -298,3 +298,52 @@ client version `<= 1.5` by linking a stub whose embedded client `<= 1.5`,
 runtime-guard newer APIs) to the fork so it loads on the Win10 test
 guest. Build glue: [`build-toolchain.md`](build-toolchain.md). Install / sign /
 debug: [`install-and-debug.md`](install-and-debug.md).
+
+---
+
+## KMDOD pivot — feasibility gate = GO
+
+After the VERDICT (IddCx is blocked here), the project pivoted to a **kernel-mode
+display-only WDDM miniport (KMDOD)** with its own framebuffer. The feasibility gate
+— which the IddCx effort never had — **passed.**
+
+### Result
+
+Built the Microsoft `video/KMDOD` sample in the EWDK (kernel-mode
+`WindowsKernelModeDriver10.0` toolset → `SampleDisplay.sys`) and installed it on a
+throwaway clone (`romhacking-hma-driver-clone`). The KMDOD INF matches PCI display
+class `CC_0300`, so it **replaces the Basic Display Adapter** on the QEMU stdvga
+(`PCI\VEN_1234&DEV_1111`); a reboot is required for the swap to take effect.
+Recovery if it fails: `qvm-run` (qrexec) is display-independent, so the driver can
+be ripped out even with a dead screen — and the clone is disposable.
+
+After fixing one real bug (below), the KMDOD **loads, runs `DriverEntry`,
+`AddDevice`, and `StartDevice` — including `DxgkCbAcquirePostDisplayOwnership`
+succeeding (so this HVM *does* expose a POST framebuffer)** — reaching device
+problem code **43** (`CM_PROB_FAILED_POST_START`: a *later* display DDI fails
+post-start; opaque in the event logs, status 0). This is categorically further
+than IddCx (which never loaded at all). **The WDDM display-only model is viable on
+this HVM.**
+
+### The MS KMDOD sample bug (`ExAllocatePool2` vs `POOL_TYPE`)
+
+The sample's `operator new` (`memory.cxx`) calls
+`ExAllocatePool2(PoolType, Size, BDDTAG)`, but `ExAllocatePool2`'s first argument
+is **`POOL_FLAGS`, not `POOL_TYPE`**. The callers pass `NonPagedPoolNx` (POOL_TYPE
+`0x200`), which as a POOL_FLAG is a reserved bit → the allocation returns NULL →
+`STATUS_NO_MEMORY` (`0xC0000017`) → `AddDevice` fails (problem 31). Fix: use
+`ExAllocatePoolZero` (which takes `POOL_TYPE`), exactly as the sample's own comment
+recommends.
+
+### Next — M1-K (own-framebuffer) → M2-K (grant)
+
+Replace the POST-framebuffer `StartDevice` (`bdd.cxx:80-88`) with our **own
+grant-shareable system-RAM primary** + a fixed BGRA mode +
+`DxgkDdiPresentDisplayOnly`→our-buffer copy (this also resolves the sample's
+`problem=43`, which lives in its POST path). Then **M2-K** grants that buffer to
+dom0 over `XcGnttab` — the F3 / [`plan.md`](plan.md) frame-path and the
+dynamic-resolution design (M4-K) carry over unchanged.
+
+> **License:** the MS KMDOD is **MS-PL** (reference only, not GPL-shippable). The
+> upstreamable Qubes driver is **original GPL-2** code, studying the MS sample plus
+> `qxl-wddm-dod` / `viogpudo` patterns.
