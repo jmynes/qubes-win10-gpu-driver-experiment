@@ -1,0 +1,58 @@
+/**
+ * Looking Glass
+ * Copyright © 2017-2026 The Looking Glass Authors
+ * https://looking-glass.io
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc., 59
+ * Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ */
+
+#include "CIndirectMonitorContext.h"
+#include "CPlatformInfo.h"
+#include "CDebug.h"
+#include "CPipeServer.h"
+
+CIndirectMonitorContext::CIndirectMonitorContext(_In_ IDDCX_MONITOR monitor, CIndirectDeviceContext * device) :
+  m_monitor(monitor),
+  m_devContext(device)
+{
+}
+
+CIndirectMonitorContext::~CIndirectMonitorContext()
+{
+  UnassignSwapChain();
+}
+
+void CIndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN swapChain, LUID renderAdapter, HANDLE newFrameEvent)
+{
+  UnassignSwapChain();
+
+  m_dx11Device = std::make_shared<CD3D11Device>(renderAdapter);
+  if (FAILED(m_dx11Device->Init()))
+  {
+    WdfObjectDelete(swapChain);
+    return;
+  }
+
+  UINT64 alignSize = CPlatformInfo::GetPageSize();
+  (void)alignSize;
+
+  m_swapChain.reset(new CSwapChainProcessor(m_monitor, m_devContext, swapChain, m_dx11Device, newFrameEvent));
+}
+
+void CIndirectMonitorContext::UnassignSwapChain()
+{
+  m_swapChain.reset();
+  m_dx11Device.reset();
+}
