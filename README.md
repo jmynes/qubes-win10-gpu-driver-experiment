@@ -86,6 +86,10 @@ API — unverified; see `docs/findings.md`.)
 - This driver does **NOT** fix the separate **>2-vCPU redraw corruption** (a guest DWM/WARP
   software-compositor SMP race). That is worked around by `bcdedit /set groupsize 2`, lives in a
   different repo (the `qubes-fiddling` ansible), and is out of scope here. Keep `groupsize 2` set.
+  **Empirically confirmed (2026-06-20):** with the working KMDOD active on a 16-vCPU qube, flipping
+  `groupsize` off + rebooting brings the corruption right back — our display-*only* driver doesn't
+  touch the WARP render path, so the race is unchanged. (Different bug from the vchan freeze that
+  M2-K partially mitigates.)
 - The **driver binary's source is the MS `video/KMDOD` sample (MS-PL)** and therefore stays **out of
   this GPL repo** — only the *recipe* (the exact changes + build/install mechanics) is committed, in
   `docs/findings.md`. The working source lives on the build/test guest (`C:\dev\kmdod`). The original

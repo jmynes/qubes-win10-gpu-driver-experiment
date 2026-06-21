@@ -17,6 +17,15 @@ Sibling docs:
 > the `qubes-fiddling` ansible repo. It is unrelated to the display driver and
 > this driver does **not** change it (Win10 forces DWM+WARP regardless of display
 > driver). Keep `groupsize 2` set throughout.
+>
+> **Empirically confirmed (2026-06-20):** with the working KMDOD as the active
+> display on a **16-vCPU** clone, `bcdedit /deletevalue groupsize` + reboot
+> **immediately brings the redraw corruption back** (user-observed); restoring
+> `groupsize 2` clears it. The KMDOD is display-**only** — no render/3D adapter —
+> so DWM still composites via **WARP** across all vCPUs and the SMP race is
+> upstream of and untouched by our driver. So `groupsize 2` stays required.
+> (Distinct bug from the vchan-under-load **freeze** that M2-K's native grant path
+> partially mitigates — neither fixes the other.)
 
 ---
 
