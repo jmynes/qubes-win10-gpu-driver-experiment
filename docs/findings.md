@@ -108,12 +108,37 @@ after  fix #2:  ... PresentDisplayOnly x N (steady state)   <-- CM_PROB_NONE, ac
   Root + TrustedPublisher** (`certutil -addstore -f`) or driver-install shows a publisher prompt;
   test-signing already on.
 
-### Remaining work (was "blocked", now just engineering)
+### Dynamic resolution — PARTIAL (follows the dom0 window to the nearest offered mode)
 
-1. **Dynamic resolution** matching the dom0 window — the KMDOD currently advertises a fixed
-   standard mode list (`bdd_dmm.cxx C_SampleSourceMode[]`) capped at the 1920×1080 framebuffer;
-   make it advertise the requested W×H and re-allocate the primary so the existing gui-agent
-   `RequestResolutionChange → ChangeDisplaySettings` snaps the guest to the exact dom0-window size.
+The gui-agent already drives dynamic resolution: on a dom0 window/host resize it calls
+`RequestResolutionChange(g_HostScreenWidth, g_HostScreenHeight)` (`gui-agent/main.c:732`) →
+`SetVideoMode` → `SelectSupportedMode` (`resolution.c:118`), which **snaps the request to the
+nearest mode the driver *enumerated at gui-agent startup*** (`EnumDisplaySettingsW`,
+`InitVideoModes`), filtered ≤ the dom0 host screen. So matching quality = how dense the driver's
+mode list is.
+
+- **Done:** densified `bdd_dmm.cxx C_SampleSourceMode[]` from 9 coarse modes to ~29 spanning
+  640×360..1856×1044 (16:9/16:10/4:3 + intermediates; must stay **sorted ascending by width** —
+  `AddSingleSourceMode` `break`s on the first width > the framebuffer max). After rebuild/reload,
+  **restart the gui-agent** so `InitVideoModes` re-enumerates. Mode switches reuse the fixed
+  1920×1080 primary (a smaller source mode is centered/letterboxed; the desktop *logical* size =
+  the source mode, which is what the gui-agent's DXGI duplication captures — so dom0 sees the new
+  size). The guest now follows the dom0 window to the nearest of the 29 modes.
+- **Note:** can't drive/observe a mode switch from a **qrexec (session-0)** PowerShell —
+  `ChangeDisplaySettings` returns success but doesn't affect the interactive desktop, and
+  `EnumDisplaySettings` returns empty; `CopyFromScreen` *does* read the real desktop. The live
+  path runs in the gui-agent's interactive session, triggered by real dom0 window resizes.
+- **For pixel-EXACT match (next):** the gui-agent snaps to enumerated modes, so exact arbitrary
+  sizing needs either (a) a driver IOCTL `SetPreferredMode(w,h)` that rewrites `DispInfo`,
+  reallocates the primary, and calls `DxgkCbIndicateChildStatus` (disconnect→reconnect) to force
+  the OS to re-enumerate that exact mode, **plus** a gui-agent patch to call it before
+  `ChangeDisplaySettings` (and not snap); or (b) a very fine mode grid. (a) is the M4-K design.
+
+### Remaining work
+
+1. **Pixel-exact dynamic resolution** — driver `SetPreferredMode` IOCTL + dynamic mode +
+   `DxgkCbIndicateChildStatus` re-enum, and the matching gui-agent patch (rebuild
+   `qubes-gui-agent-windows`). See above.
 2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
    replacing the gui-agent's DXGI capture.
 
