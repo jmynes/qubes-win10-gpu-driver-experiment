@@ -24,6 +24,18 @@ Sibling docs:
 > `groupsize 2` clears it. The KMDOD is display-**only** — no render/3D adapter —
 > so DWM still composites via **WARP** across all vCPUs and the SMP race is
 > upstream of and untouched by our driver. So `groupsize 2` stays required.
+>
+> **Why a targeted CPU-affinity pin can't replace it (tested, fails):** pinning
+> `dwm.exe` to 2 CPUs via `ProcessorAffinity` — both on the running process *and*
+> killed + re-pinned at respawn (so it comes up with the affinity set) — does **NOT**
+> clear the corruption (user-observed, `groupsize` off, 16 vCPUs). WARP sizes its
+> compositor thread pool to the **visible logical-CPU count (16)**, not the process
+> affinity mask; affinity only relocates those threads, it doesn't reduce them, and
+> the race is thread-*count* driven. Only processor **groups** (`groupsize`), ≤2
+> vCPUs, or a real GPU (so WARP isn't used at all) shrink the count. There is also
+> only one `dwm.exe`; the two `csrss.exe` are protected (can't pin). So the **global
+> `groupsize 2` boot flag is genuinely the only software lever** — the real fix is a
+> GPU: **passthrough** today, or **virtio-gpu** if/when Xen/libxl supports it.
 > (Distinct bug from the vchan-under-load **freeze** that M2-K's native grant path
 > partially mitigates — neither fixes the other.)
 
