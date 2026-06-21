@@ -347,3 +347,59 @@ dynamic-resolution design (M4-K) carry over unchanged.
 > **License:** the MS KMDOD is **MS-PL** (reference only, not GPL-shippable). The
 > upstreamable Qubes driver is **original GPL-2** code, studying the MS sample plus
 > `qxl-wddm-dod` / `viogpudo` patterns.
+
+---
+
+## ⛔ FINAL VERDICT — a custom WDDM display driver is NOT achievable on this Qubes/Xen Win10 HVM
+
+After exhaustive investigation, **all four viable routes are walled off by the platform**, not by our code:
+
+### 1. IddCx (user-mode indirect display) — won't load
+The UMDF host cannot bind the IddCx class extension on this emulated HVM. Any
+`iddcxstub`-linked driver fails (device problem **31** / host `0xD000000D`) while a
+non-IddCx UMDF driver loads with the identical INF. Toolchain/version/CRT/signing/
+INF/render-adapter all eliminated. (See the earlier VERDICT section.)
+
+### 2. KMDOD (kernel display-only, on the QEMU stdvga) — adapter silently rejected
+The KMDOD **loads, runs DriverEntry, AddDevice, StartDevice, QueryChildRelations,
+QueryAdapterInfo** — all succeed — and then **dxgkrnl silently rejects the adapter**:
+device problem **43** (`CM_PROB_FAILED_POST_START`), **Problem Status `0x0`**, *before
+any VidPn DDI is called*. Confirmed via Kernel-PnP + dxgkrnl ETW (the dxgkrnl trace is
+34k unformatted profiler/vsync events — no readable rejection reason). Crucially, the
+**stock, unmodified Microsoft `video/KMDOD` sample fails identically** — so this is the
+platform, not our driver. Root: the **stdvga (`VEN_1234&DEV_1111`) is a plain VGA
+device, not a GPU**; Windows hosts only the inbox Basic Display Adapter on it and
+rejects a real WDDM adapter. (Removing the leftover IddCx adapter, ruling out the mode
+list, and the `ExAllocatePoolZero` fix were all done; none changes the rejection.)
+
+### 3. Live kernel debugging (to see *why* dxgkrnl rejects it) — no transport
+- `tcp` serial → **libxl refuses to build the domain**.
+- `pty` serial → starts, but the pty is in the **stubdomain**; reaching a WinDbg means a
+  fragile stubdom→`xl console`→socat→cross-qube→pipe multi-hop.
+- KDNET → the only NIC is **RTL8139** (not KDNET-capable) and the Xen device-model
+  offers no KDNET-supported NIC.
+
+### 4. A different virtual GPU (qxl / virtio-gpu) — not offered by libxl
+Qubes exposes a first-class `video-model` feature, but this Xen/libxl only supports
+`stdvga`/`cirrus`/`none`:
+- `qvm-features <vm> video-model qxl` → domain fails to build (qxl requires SPICE,
+  which Qubes does not run).
+- `qvm-features <vm> video-model virtio` → `unsupported configuration: video type
+  virtio is not supported by libxl`.
+
+### Root cause + unblock condition
+The platform gives Windows **only a basic VGA device**, on which Windows will not host a
+real WDDM adapter — and the two ways out (a true virtual GPU, or live KD to engineer
+around the rejection) are **both unavailable in this Qubes/Xen build**. The unblock
+condition is upstream: **virtio-gpu support in Xen/libxl** (the 2025 patch series) →
+then `viogpudo` (the proven virtio-gpu WDDM display-only driver) + a `XcGnttab` grant
+path becomes viable, and the entire frame-path/dynamic-resolution design in
+[`plan.md`](plan.md) carries straight over. **Until then, the agent's existing
+DXGI-capture-of-BasicDisplay path is the only workable approach**, and that upstream
+`TODO: custom WDDM driver` stays blocked for a concrete, documented reason.
+
+### What this effort produced (durable value)
+A working EWDK driver build/sign/deploy pipeline over qrexec; a kernel registry-logging
+tracer (`QbLog`) and an ETW-capture harness for headless WDDM debugging; the precise
+failure signature of every route; and a concrete spec of what a future Qubes Win10
+display driver needs (a virtio-gpu-capable Xen + `viogpudo` + the grant path).
