@@ -117,13 +117,18 @@ nearest mode the driver *enumerated at gui-agent startup*** (`EnumDisplaySetting
 `InitVideoModes`), filtered ≤ the dom0 host screen. So matching quality = how dense the driver's
 mode list is.
 
-- **Done:** densified `bdd_dmm.cxx C_SampleSourceMode[]` from 9 coarse modes to ~29 spanning
-  640×360..1856×1044 (16:9/16:10/4:3 + intermediates; must stay **sorted ascending by width** —
-  `AddSingleSourceMode` `break`s on the first width > the framebuffer max). After rebuild/reload,
-  **restart the gui-agent** so `InitVideoModes` re-enumerates. Mode switches reuse the fixed
-  1920×1080 primary (a smaller source mode is centered/letterboxed; the desktop *logical* size =
-  the source mode, which is what the gui-agent's DXGI duplication captures — so dom0 sees the new
-  size). The guest now follows the dom0 window to the nearest of the 29 modes.
+- **Done:** `AddSingleSourceMode` (`bdd_dmm.cxx`) now also generates a **fine grid programmatically**
+  — `for (mw=640..WidthMax step 48) for (mh=360..HeightMax step 48)` with an aspect filter
+  (`0.7 ≤ mw/mh ≤ 2.4`) → **~314 modes** (within ~24px of any window), bounded by the framebuffer.
+  Generated in code (not a static array) because a 314-entry literal overflows the qrexec
+  `-EncodedCommand` length limit. Also **removed the per-call `ZwFlushKey`** from `QbLog` (`bdd.cxx`):
+  with hundreds of modes the OS fires `IsSupportedVidPn`/`EnumVidPnCofuncModality` per mode, and a
+  forced registry flush per trace line would stall adapter-start into a TDR. After rebuild/reload,
+  **restart the gui-agent** so `InitVideoModes` re-enumerates. Verified the 314-mode driver starts
+  clean (`CM_PROB_NONE`, no TDR). Mode switches reuse the fixed 1920×1080 primary (a smaller source
+  mode is centered/letterboxed; the desktop *logical* size = the source mode, which is what the
+  gui-agent's DXGI duplication captures — so dom0 sees the new size). The guest follows the dom0
+  window to within ~24px. (Driver-only; pixel-exact still needs the gui-agent patch below.)
 - **Note:** can't drive/observe a mode switch from a **qrexec (session-0)** PowerShell —
   `ChangeDisplaySettings` returns success but doesn't affect the interactive desktop, and
   `EnumDisplaySettings` returns empty; `CopyFromScreen` *does* read the real desktop. The live
