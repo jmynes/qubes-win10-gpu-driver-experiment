@@ -1,33 +1,98 @@
 # qubes-win10-gpu-driver-experiment
 
-A Windows-10 IddCx indirect display driver for Qubes OS — a lab notebook and toolkit for building a custom virtual display driver that gives Windows HVM qubes **dynamic resolution** plus a **native grant-based frame path** (Windows `XcGnttab` grants → `MSG_SHMIMAGE` over the qubes-gui vchan), bypassing the emulated qemu-stubdom GUI pipeline.
+A **working** Windows-10 WDDM **display-only (KMDOD)** driver for Qubes OS HVM qubes — a lab
+notebook and toolkit that closes the long-standing `qubes-gui-agent-windows` *"TODO: custom WDDM
+driver"*. The guest desktop gets **dynamic resolution that follows the dom0 window** (above and below
+1080p) with **panel-aware maximize and tiling**, on the emulated QEMU stdvga that the project had
+previously written off as incapable of hosting a real WDDM adapter.
 
-**Status:** M0a (build toolchain + skeleton build) **DONE** · M0b feasibility gate / risk R1 **DONE = GO** · M1 (fork LGIdd, strip, build, install, confirm a virtual monitor enumerates) **NEXT, not started**.
-
----
-
-## What this is / why
-
-`qubes-gui-agent-windows` carries a long-standing TODO: a custom WDDM/display driver so Windows qubes get a first-class GUI integration instead of riding the emulated stub-domain framebuffer. This repo is the effort to close that TODO with a modern **IddCx UMDF** (User-Mode Driver Framework) indirect display driver, which is far simpler to build and ship than a kernel WDDM miniport.
-
-Two concrete wins are the goal:
-
-- **Dynamic resolution** — the virtual monitor resizes to follow the dom0 window instead of being pinned to a fixed emulated mode.
-- **Native grant frame path** — each frame is copied into a grant-shareable system-RAM buffer, those pages are granted via `XcGnttab`, and the gui-agent ships a `MSG_SHMIMAGE` over the existing qubes-gui vchan. This removes the qemu-stubdom emulated-GUI hop from the frame pipeline.
-
-### Honesty caveat
-
-This driver does **NOT** fix the separate **>2-vCPU redraw corruption** (desktop fragments / redraw trails on Windows HVM qubes with more than two vCPUs). That is an unrelated guest DWM/WARP software-compositor SMP race, already worked around by `bcdedit /set groupsize 2` (the "groupsize-2" fix). That fix lives in a **different repo** (the `qubes-fiddling` ansible) and is out of scope here. The two efforts are independent.
+> **Status (2026-06-20): IT WORKS.** A custom kernel-mode WDDM display-only miniport is the live
+> active display on a Qubes/Xen Win10 22H2 HVM (`CM_PROB_NONE`): it loads, starts, commits a VidPn,
+> presents continuously, follows the dom0 window's size **above and below 1080p**, and its
+> **maximize and half-tile (XFCE Super+↑ / Super+←→) respect the xfce4-panel** like the Win7/qvideo
+> qube — **stable, no freeze**. User-confirmed. This **overturns** the earlier "FINAL VERDICT" that a
+> custom WDDM display driver is not achievable on this platform.
+>
+> Remaining: **M2-K** — the native `XcGnttab` grant frame-path (bypass the gui-agent's DXGI capture).
 
 ---
 
-## Headline findings
+## The headline: the "impossible" verdict was wrong
 
-Full detail and provenance in [`docs/findings.md`](docs/findings.md).
+An earlier investigation concluded *"a custom WDDM display driver is NOT achievable on this Qubes/Xen
+Win10 HVM"* — the MS `KMDOD` sample loaded and started but `dxgkrnl` rejected the adapter with device
+**problem 43**, and the conclusion was that the QEMU stdvga is *"a plain VGA device, not a GPU"* so
+Windows won't host a WDDM adapter on it.
 
-- **F1 — Windows 10 is an IddCx 1.5 ceiling.** Win10 2004 through 22H2 (builds 19041 through 19045, including 22H2 / 19045) ship IddCx 1.5 (`IddCxGetVersion` 0x1500); IddCx 1.4 was the ceiling only on the older Win10 18362/18363 (19H1/19H2). IddCx 1.5 is itself a Windows 10 version — the first Windows-11-only IddCx is **1.8** (Win11 21H2 / 22000 = 1.8, 22H2 / 22621 = 1.9, 23H2 / 22631 = 1.10). Proof: a driver built against IddCx 1.10 (effective client 1.10 > framework 1.5) fails to load with **device problem code 31 / UMDF host error `0xD000000D`**. (`IndirectKmd.sys` `10.0.19041.1` only indicates the 2004 servicing branch — which ships 1.5 — and is not by itself proof of any 1.x API level.) The driver must compile against newer headers but keep its effective client version **≤ 1.5** (set a low `IDDCX_MINIMUM_VERSION_REQUIRED` — the minimum IddCx version the driver *requires*, lower = installs on more OSes — and runtime-guard any >1.5 API via `IDD_IS_FUNCTION_AVAILABLE` / `IDD_IS_FIELD_AVAILABLE`).
-- **F2 — MttVDD (Virtual-Display-Driver "HDR" edition) is structurally Win11-only.** It uses `IDDCX_MONITOR_MODE2.BitsPerComponent` (IddCx 1.10+ HDR/Mode2), so it requires IddCx 1.10 and cannot load on Win10 (which caps at 1.5). Abandoned as the fork base.
-- **F3 — Risk R1 resolved = GO.** Looking Glass's `LGIdd` acquires each frame as a D3D **texture** (on the IddCx 1.10 Buffer2 acquire path it passes `AcquireSystemMemoryBuffer = FALSE`; the legacy acquire just returns a texture with no such option), then GPU-copies it (dirty-rect aware) into a CPU-accessible buffer. `LGIdd`'s `CFrameBufferResource` is *either* a GPU-shared placed resource on a cross-adapter heap (fast path: the GPU copies straight in and completion just advances the write pointer via `FinalizeFrameBuffer`) *or* a CPU-mapped readback buffer needing one extra CPU copy (`WriteFrameBuffer`) — selected by `IsIndirectCopy()`. So the proven Win10 path is **texture → GPU-copy → CPU buffer**, which we copy into a grant-shareable buffer. **Fork base = `LGIdd`** (gnif/LookingGlass, GPL-2.0-or-later) per **F4**.
+**That root cause was wrong.** The smoking gun: the inbox **`BasicDisplay.sys` is itself a WDDM
+kernel display-only miniport, and it runs fine on this exact stdvga** — so the platform clearly *can*
+host one. `problem 43` was two **newer-WDK-vs-older-OS build bugs**, both fixable:
+
+1. **DDI / struct-size version gate.** Built with the Win11-24H2 EWDK, `DXGKDDI_INTERFACE_VERSION`
+   defaults to `WDDM3_2` (`0x11007`), so `DXGK_DRIVERCAPS` compiles at the larger Win11 layout; Win10
+   19045's `dxgkrnl` passes a *smaller* `OutputDataSize`, so the sample's
+   `QueryAdapterInfo(DRIVERCAPS)` `OutputDataSize < sizeof(...)` guard rejects → adapter fails
+   **before any VidPn DDI** (the exact observed signature). *Fix:* pin
+   `DXGKDDI_INTERFACE_VERSION=0xC004` (WDDM 2.7, this OS's `dxgkrnl` ABI) in the `.vcxproj`. This is
+   the kernel-mode analogue of the IddCx client-version gate (**F1**) the prior work had already
+   proven — but never applied to the kernel driver.
+2. **Async-present TDR.** The sample's first present takes an async path that needs a hardware
+   present-progress interrupt the emulated stdvga lacks → *"display driver stopped responding"*
+   (`problem 43` after the first present). *Fix:* force synchronous present (`m_SynchExecution = TRUE`
+   in `blthw.cxx`) → a synchronous CPU blt that returns `STATUS_SUCCESS`, no interrupt dependency.
+
+Both stock and modified KMDOD failed identically *because both were built with the same too-new EWDK*
+— a fact the prior verdict read as "it's the platform," when it was the toolchain.
+
+Full evidence, the live `QbLog` DDI traces, and every elimination: [`docs/findings.md`](docs/findings.md).
+
+---
+
+## What works, and how
+
+The driver is a **kernel-mode WDDM display-only miniport** derived from the Microsoft `video/KMDOD`
+sample. It owns its own **page-aligned, grant-shareable system-RAM primary** (a fixed-max contiguous
+buffer); the OS composites the desktop into it via `DxgkDdiPresentDisplayOnly`. The existing
+`qubes-gui-agent-windows` captures that desktop with **DXGI Desktop Duplication** (unchanged) and
+ships it to dom0 — **no gui-agent rebuild was needed**.
+
+- **Dynamic resolution, above & below 1080p.** The primary is allocated once at the largest size a
+  contiguous allocation succeeds for (`{3840×2160, 2560×1600, 2560×1440, 1920×1200, 1920×1080}`
+  fallback chain); `bdd_dmm.cxx` advertises a mode grid up to that cap. The gui-agent's existing
+  `RequestResolutionChange → SelectSupportedMode → ChangeDisplaySettings` path then snaps the guest
+  to the dom0 window size — which previously couldn't grow past the old fixed 1920×1080 primary.
+- **Panel-aware maximize & tiling.** A maximize/tile requests *full-or-half width × (full height −
+  panel)*, so the driver pre-enumerates **8px-stepped heights near each monitor's full height, at
+  full *and* half monitor widths** (`QbMon[]` in `bdd_dmm.cxx`). The gui-agent's own snap then lands
+  **within ~4px** of the work area (biased *under* → the xfce4-panel stays visible), matching the
+  Win7/qvideo qube.
+
+### The one that got away (kept dormant)
+
+A `DxgkDdiEscape` + a tiny user-mode corrector (in [`um/`](um/)) gave **true 0px-exact** resolution
+*without* rebuilding the gui-agent — but `SetPreferredMode`'s per-change synthetic monitor **hotplug**
+(`DxgkCbIndicateChildStatus` FALSE→TRUE) makes the gui-agent's DXGI duplication lose its surface
+(`DXGI_ERROR_ACCESS_LOST`) and re-init, which trips the known WARP/vchan freeze after ~3 changes
+(needs `qvm-kill`). And *without* the hotplug, `ChangeDisplaySettings` rejects any non-enumerated
+mode (`DISP_CHANGE_BADMODE`) — so per-pixel exactness and stability are mutually exclusive via that
+API on this stack. The escape DDI and the `um/` tools are kept **dormant**; the stable fine-height
+grid is the shipped answer. (A 0px-exact-*and*-stable path may exist via the CCD `SetDisplayConfig`
+API — unverified; see `docs/findings.md`.)
+
+---
+
+## Honesty caveats
+
+- This driver does **NOT** fix the separate **>2-vCPU redraw corruption** (a guest DWM/WARP
+  software-compositor SMP race). That is worked around by `bcdedit /set groupsize 2`, lives in a
+  different repo (the `qubes-fiddling` ansible), and is out of scope here. Keep `groupsize 2` set.
+- The **driver binary's source is the MS `video/KMDOD` sample (MS-PL)** and therefore stays **out of
+  this GPL repo** — only the *recipe* (the exact changes + build/install mechanics) is committed, in
+  `docs/findings.md`. The working source lives on the build/test guest (`C:\dev\kmdod`). The original
+  GPL-2 code here is the `um/` escape tooling.
+- The currently-running build is **hot-swapped on a disposable Win10 clone** for fast iteration; an
+  upstreamable Qubes driver would be original GPL-2 code (studying the MS sample plus
+  `qxl-wddm-dod`/`viogpudo`) wired into `qubes-gui-agent-windows`.
 
 ---
 
@@ -36,50 +101,52 @@ Full detail and provenance in [`docs/findings.md`](docs/findings.md).
 ```
 qubes-win10-gpu-driver-experiment/
 ├── README.md                      # this file
+├── CLAUDE.md                      # operational orientation (read first)
 ├── LICENSE                        # GPL-2.0-or-later
-├── .gitignore
-├── toolchain/
-│   ├── Directory.Build.props      # WDK-NuGet glue (authoritative — do not rewrite)
-│   └── Directory.Build.targets    # late-import fixes (trailing-slash, include roots, stub libs)
 ├── docs/
-│   ├── plan.md                    # the M0..M5 milestone plan
-│   ├── findings.md                # F1..F4 technical findings (detail)
-│   ├── build-toolchain.md         # how the Build-Tools + WDK-NuGet build works
-│   └── install-and-debug.md       # package / sign / install / debug recipe
+│   ├── findings.md                # THE record: the breakthrough, the recipe, every fix + trace
+│   ├── plan.md                    # the original (IddCx-era) milestone plan — partly superseded
+│   ├── m1-strip-plan.md           # LGIdd strip plan (IddCx route)
+│   ├── build-toolchain.md         # VS Build Tools + WDK-NuGet build glue (IddCx route)
+│   └── install-and-debug.md       # package / sign / install / debug recipe + qrexec mechanics
+├── um/                            # ORIGINAL GPL-2 user-mode tooling for the (dormant) escape path
+│   ├── qb_escape.h                # shared UM<->KM escape struct
+│   ├── set-res.c                  # one-shot exact-resolution test tool (D3DKMTEscape)
+│   └── qb-resd.c                  # log-tailing resolution corrector daemon
+├── driver/                        # LGIdd IddCx fork — the ABANDONED route, kept as the reproduction
+├── driver-mssample/               # MS IddCx sample baseline (the IddCx-won't-load endpoint)
+├── toolchain/                     # Directory.Build.{props,targets} — WDK-NuGet glue (IddCx route)
 └── scripts/
-    ├── deploy-to-guest.sh         # mgmtvm → guest file push over qrexec
-    ├── guest-setup-buildtools.ps1 # install VS Build Tools + ATL in the guest
-    ├── guest-build.ps1            # restore + build the .vcxproj in the guest
-    └── guest-package-install.ps1  # stamp INF, sign, pnputil/devcon install
+    ├── deploy-to-guest.sh         # mgmtvm → guest byte-faithful file push over qrexec (base64-stdin)
+    ├── guest-build.ps1            # build a .vcxproj in the guest
+    ├── guest-package-install.ps1  # stamp INF, sign, pnputil/devcon install
+    └── guest-setup-buildtools.ps1 # install VS Build Tools in the guest
 ```
 
-This repo is the **source of truth** on the Qubes mgmtvm: edit here (git-versioned), deploy to the Windows guest over qrexec, build in the guest. (Previously the build glue was edited ad-hoc inside the guest, which was fragile; this repo fixes that.)
+This repo is the **source of truth** on the Qubes mgmtvm: author + `git` here, deploy to the Windows
+guest over qrexec, build in the guest.
 
 ---
 
-## Dev loop / quick-start
+## Toolchain & dev loop
 
-The dev host is the Qubes mgmtvm (AdminVM). The Windows build+test guest is the qube **`romhacking-hma-driver`** (Win10 Pro 22H2 / build 19045; Qubes Windows Tools installed; `bcdedit /set groupsize 2` set; test-signing ON).
+The driver that actually builds + loads here needs the **EWDK 28000** (`WindowsKernelModeDriver10.0`
+toolset, mounted ISO) — *not* the v143 + WDK-NuGet path (that only compiles, and was for the
+abandoned IddCx route). The `um/` tools build with `cl` + the EWDK's UM SDK headers/libs.
+
+- **Dev host:** the Qubes **mgmtvm** (AdminVM).
+- **Build/test guest:** a Win10 Pro 22H2 / 19045 qube with Qubes Windows Tools, `groupsize 2`, and
+  test-signing ON. Build under `C:\dev\…`. Run guest PowerShell via base64 UTF-16LE
+  `-EncodedCommand` over `qvm-run --pass-io --no-gui <qube>` (avoids all quoting/length problems).
 
 ```bash
-# 1. Edit sources + toolchain glue here, on mgmtvm (git-versioned).
-
-# 2. Push this repo into the guest build dir (C:\dev\LGIdd) over qrexec:
-#    args: <guest-qube> <local-dir> <guest-dest-dir>
-./scripts/deploy-to-guest.sh romhacking-hma-driver ./toolchain "C:\dev\LGIdd"
+# push a file/dir into the guest over qrexec (byte-faithful, base64-on-stdin)
+./scripts/deploy-to-guest.sh <guest-qube> ./<dir> "C:\dev\..."
 ```
 
-```powershell
-# 3. In the guest (romhacking-hma-driver), restore + build:
-guest-build.ps1 -ProjDir "C:\dev\LGIdd" -VcxProj "LGIdd.vcxproj"
-
-# 4. Package, sign, and install the driver, then create the device node:
-guest-package-install.ps1 -ProjDir "C:\dev\LGIdd" -RelDir "x64\Release" -Inf "LGIdd.inf" -Hwid "Root\LGIdd"
-```
-
-Scripts drive the guest via base64-encoded `-EncodedCommand` PowerShell over `qvm-run --pass-io --no-gui` (the encoding avoids all quoting/length problems). See [`docs/install-and-debug.md`](docs/install-and-debug.md) for the qrexec file-push/pull mechanics.
-
-The toolchain itself — building an IddCx UMDF driver with **VS Build Tools + WDK-via-NuGet** (no EWDK, no WDK Visual Studio extension) — is the novel M0a achievement; it took ~13 build iterations to peel toolset → legacy resolver → include roots → WDF header version → ATL → 3 stub libs. The full chain is in [`docs/build-toolchain.md`](docs/build-toolchain.md).
+Install gotchas, signing (`/sm` machine store; cert into Root + TrustedPublisher), the `pnputil
+/disable-device → swap .sys → /enable-device` hot-reload loop, and the `QbLog` registry DDI tracer
+are documented in [`docs/install-and-debug.md`](docs/install-and-debug.md) and the findings.
 
 ---
 
@@ -87,18 +154,20 @@ The toolchain itself — building an IddCx UMDF driver with **VS Build Tools + W
 
 | Milestone | What | State |
 |-----------|------|-------|
-| **M0a** | Build toolchain (Build Tools + WDK NuGet) + skeleton build | **DONE** — MttVDD skeleton built to `MttVDD.dll` (746 KB) |
-| **M0b** | Feasibility gate / risk R1 (CPU buffer vs GPU texture?) | **DONE = GO** (F3) |
-| **M1** | Fork `LGIdd`, strip IVSHMEM/LGMP/pipe, build, install, confirm a virtual monitor enumerates | **NEXT — not started** |
-| **M2** | First static frame to dom0 over the grant path | planned |
-| **M3** | Live frames (prototype-complete) | planned |
-| **M4** | Dynamic resolution follows the dom0 window | planned |
-| **M5** | Cleanup + upstreamable PR to `qubes-gui-agent-windows` | planned |
+| IddCx route | UMDF indirect display driver | **ABANDONED** — the UMDF host can't bind the IddCx class extension on this HVM (won't load); kept as `driver/` + `driver-mssample/` |
+| **KMDOD load** | kernel WDDM display-only miniport loads + starts + presents | **✅ DONE** — two build-bug fixes (DDI version pin + sync present) cleared `problem 43`; overturns the "FINAL VERDICT" |
+| **Dynamic resolution** | guest follows the dom0 window, above & below 1080p | **✅ DONE** |
+| **Panel-aware** | maximize *and* half-tile respect the xfce4-panel, stable | **✅ DONE** (user-confirmed) |
+| **M2-K** | native `XcGnttab` grant frame-path (bypass DXGI capture) | **NEXT** |
+| Upstream | original GPL-2 driver + PR to `qubes-gui-agent-windows` | planned |
 
-Full milestone plan: [`docs/plan.md`](docs/plan.md).
+> Note: [`docs/plan.md`](docs/plan.md) predates this and is written around the IddCx route; treat
+> `docs/findings.md` as the authoritative current record.
 
 ---
 
 ## License
 
-**GPL-2.0-or-later** (see [`LICENSE`](LICENSE)). This work forks Looking Glass's `LGIdd` (gnif/LookingGlass, GPL-2.0-or-later); the copyleft is inherited from that base.
+**GPL-2.0-or-later** (see [`LICENSE`](LICENSE)). The `um/` tooling and any future driver code here are
+original GPL-2. The KMDOD reference source is Microsoft's MS-PL sample and is **not** vendored — only
+its recipe is documented.
