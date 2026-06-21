@@ -13,7 +13,10 @@ previously written off as incapable of hosting a real WDDM adapter.
 > qube — **stable, no freeze**. User-confirmed. This **overturns** the earlier "FINAL VERDICT" that a
 > custom WDDM display driver is not achievable on this platform.
 >
-> Remaining: **M2-K** — the native `XcGnttab` grant frame-path (bypass the gui-agent's DXGI capture).
+> The native grant frame-path (**M2-K**) turned out to be **already in effect**: the unmodified
+> gui-agent grants the OS desktop surface straight to dom0 over `XcGnttab` (our software KMDOD keeps
+> the desktop in system memory, which is exactly what its existing direct-grant path needs). So the
+> project's full thesis — dynamic resolution *and* native grant frame-path — is realized.
 
 ---
 
@@ -162,7 +165,7 @@ are documented in [`docs/install-and-debug.md`](docs/install-and-debug.md) and t
 | **KMDOD load** | kernel WDDM display-only miniport loads + starts + presents | **✅ DONE** — two build-bug fixes (DDI version pin + sync present) cleared `problem 43`; overturns the "FINAL VERDICT" |
 | **Dynamic resolution** | guest follows the dom0 window, above & below 1080p | **✅ DONE** |
 | **Panel-aware** | maximize *and* half-tile respect the xfce4-panel, stable | **✅ DONE** (user-confirmed) |
-| **M2-K** | native `XcGnttab` grant frame-path (bypass DXGI capture) | **NEXT** |
+| **M2-K** | native `XcGnttab` grant frame-path | **✅ ALREADY IN EFFECT** — the unmodified gui-agent grants the OS desktop surface directly (our software KMDOD makes `DesktopImageInSystemMemory` true); driver-side granting was an IddCx-only need |
 | Upstream | original GPL-2 driver + PR to `qubes-gui-agent-windows` | planned |
 
 > Note: [`docs/plan.md`](docs/plan.md) predates this and is written around the IddCx route; treat

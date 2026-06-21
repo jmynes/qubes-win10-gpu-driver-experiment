@@ -212,14 +212,38 @@ own snap then lands **within ~4px** of the work area (biased *under* → panel s
 stable across many resizes. Not literally pixel-exact (±~4px, imperceptible). `QbMon[]` lists the
 monitor (w, full-height) pairs — extend it for other monitor sizes / tile layouts.
 
+### ✅ M2-K — the native grant frame-path is ALREADY in effect (no work needed for the KMDOD)
+
+Investigated on a clone for M2-K and found it's **already done** — the *unmodified* gui-agent grants
+the desktop frame straight to dom0. Proof chain from `gui-agent/capture.c`:
+
+- `capture.c:176-183` — the gui-agent's **only** capture path **requires** `DesktopImageInSystemMemory`;
+  otherwise it logs `"TODO: desktop is not in system memory"` and **fails** (`goto fail`).
+- Capture demonstrably works on the KMDOD all session (maximize/tile/render in dom0), and the init log
+  shows the second `XcOpen` (`CaptureInitialize`'s grant handle, `capture.c:216`) with **no** "not in
+  system memory" error → `DesktopImageInSystemMemory` is **TRUE**.
+- So on the first frame `capture.c:368-401` runs `MapDesktopSurface` → `XcGnttabPermitForeignAccess2`
+  and `assert(framebuffer == frame.rect.pBits)` — it **grants the OS desktop surface itself** to dom0
+  over the qubes-gui vchan, dirty-rect aware (`GetFrameDirtyRects`), no emulated-GUI hop, no extra copy.
+
+That **is** M2-K's goal. The driver-side M2-K (driver allocates + grants its *own* primary) was an
+**IddCx-specific** need: for an IddCx driver the acquired frame is a **GPU texture not in system
+memory**, so `DesktopImageInSystemMemory` is false, the gui-agent hits `goto fail`, and the driver has
+to copy each frame to a CPU buffer and grant it (the F3 design). Our **software KMDOD** (no GPU → WARP
+→ desktop stays in system RAM) makes `DesktopImageInSystemMemory` true, so the gui-agent's *existing*
+direct-grant path just works — strictly simpler than driver-side granting. Our `PresentDisplayOnly`
+copy into the KMDOD primary is then a write-only sink that just satisfies the WDDM present contract;
+the dom0 frame path uses the DXGI desktop surface, not our primary. **The project's full thesis
+(dynamic resolution + native grant frame-path) is realized.**
+
 ### Remaining work
 
 1. **Truly-exact + stable (optional)** — try the CCD `SetDisplayConfig` API instead of
    `ChangeDisplaySettings`: it may commit an arbitrary source mode through the VidPn DDIs (the driver
    already accepts it via the dormant `m_PreferredWidth/Height` path in `AddSingleSourceMode`) **without
    a hotplug** — which would give 0px-exact with no DXGI churn / freeze. Unverified.
-2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
-   replacing the gui-agent's DXGI capture.
+2. **Upstreamable PR** — original GPL-2 driver (studying the MS KMDOD + `qxl-wddm-dod`/`viogpudo`) +
+   the `groupsize 2` honesty banner, to `qubes-gui-agent-windows`. The frame path needs no agent change.
 
 > **License:** the KMDOD is the MS-PL `video/KMDOD` sample (reference only) — its source stays
 > **out of this GPL-2 repo**; only the recipe above (two changes + the build/install mechanics) is
