@@ -20,6 +20,110 @@ Sibling docs:
 
 ---
 
+## ✅ BREAKTHROUGH (2026-06-20) — a custom WDDM display-only driver **DOES** work here; the "FINAL VERDICT" is OVERTURNED
+
+The earlier "⛔ FINAL VERDICT" (further down) concluded a custom WDDM display
+driver is **not achievable** on this Qubes/Xen Win10 HVM. **That is wrong.** On a
+fresh clone (`romhacking-hma-driver-clone2`, Win10 19045.7417) the KMDOD now:
+
+- **loads, runs DriverEntry/AddDevice/StartDevice**, passes **QueryAdapterInfo/DRIVERCAPS**,
+  negotiates the full **VidPn** (`IsSupportedVidPn` → `EnumVidPnCofuncModality` →
+  `CommitVidPn`), and **presents continuously** (`PresentDisplayOnly` at steady state);
+- is the **active display adapter** — Device Manager `CM_PROB_NONE`, desktop at **1920×1080**,
+  `Win32_VideoController` = "Kernel mode display only sample driver".
+
+It owns its **own** grant-shareable system-RAM primary (`MmAllocateContiguousMemory`,
+`StartDevice`), so the F3/[`plan.md`](plan.md) grant + dynamic-resolution design carries
+straight over. The platform was never the wall.
+
+### Why the prior verdict was wrong (the smoking gun)
+
+The inbox **`BasicDisplay.sys` (10.0.19041.3636) + `BasicRender.sys` are themselves a
+WDDM kernel display-only miniport, and they run fine on this exact QEMU stdvga**
+(`PCI\VEN_1234&DEV_1111`). So the platform *does* host display-only WDDM adapters. The
+prior `problem=43` was **not** a platform rejection — it was two newer-WDK-vs-older-OS
+bugs, both in the same class as the IddCx **F1** version-gate (which was never applied to
+the KMDOD). The stock *and* modified KMDOD failed identically **because both were built
+with the same too-new EWDK 28000**.
+
+### Root cause #1 — DDI/struct version mismatch → `DRIVERCAPS` size check rejects the adapter
+
+Built with the Win11-24H2 EWDK (`WindowsTargetPlatformVersion=10.0.28000.0`),
+`DXGKDDI_INTERFACE_VERSION` defaults to `DXGKDDI_INTERFACE_VERSION_WDDM3_2` (`0x11007`),
+so `DXGK_DRIVERCAPS` compiles at the **larger Win11 layout**. Win10 19041's dxgkrnl passes
+`OutputDataSize = sizeof(its own WDDM-2.7 DXGK_DRIVERCAPS)` — **smaller** — so the sample's
+`QueryAdapterInfo(DXGKQAITYPE_DRIVERCAPS)` guard
+`if (OutputDataSize < sizeof(DXGK_DRIVERCAPS)) return STATUS_BUFFER_TOO_SMALL;` **fails**,
+dxgkrnl rejects the adapter → **device problem 43, right after QueryAdapterInfo, before any
+VidPn DDI** (exactly the observed/recorded signature). Confirmed live via the `QbLog`
+registry tracer: the trace died at the 2nd `QueryAdapterInfo`.
+
+**Fix:** pin the DDI ABI to the OS level. Add to the driver `.vcxproj`
+`ClCompile/PreprocessorDefinitions`:
+
+```
+DXGKDDI_INTERFACE_VERSION=0xC004      ;# = DXGKDDI_INTERFACE_VERSION_WDDM2_7, this OS's dxgkrnl ABI
+```
+
+`d3dukmdt.h` guards its master define with `#if !defined(DXGKDDI_INTERFACE_VERSION)`, so the
+predefine **wins** and every version-guarded struct (esp. `DXGK_DRIVERCAPS`) compiles at the
+exact layout Win10 passes → the size check passes, the adapter starts. (Numeric values from
+the 26100/28000 `d3dukmdt.h`: `WDDM1_3=0x4002`, `WDDM2_0=0x5023`, `WDDM2_7=0xC004`,
+`WDDM3_0=0xF003`, `WDDM3_2=0x11007`.) This is the kernel-mode analogue of the IddCx F1
+client-version gate — same disease, same cure.
+
+### Root cause #2 — async present path needs a HW present-progress interrupt the stdvga lacks → TDR
+
+With #1 fixed the adapter started and reached `PresentDisplayOnly`, then hit **problem 43
+again — but now a TDR**: System log **Event 4113 "Display driver KDODSamp stopped responding
+and has been successfully disabled."** The MS sample's `BDD_HWBLT::ExecutePresentDisplayOnly`
+**alternates** sync/async (`m_SynchExecution = !m_SynchExecution;`, `blthw.cxx`), so the
+**first** present takes the **async worker-thread path**, returns `STATUS_PENDING`, and relies
+on `ReportPresentProgress` → `DxgkCbNotifyInterrupt` (a *faked* present-progress interrupt) to
+signal completion. The emulated stdvga has **no interrupt path**, so completion never arrives →
+dxgkrnl's watchdog times out → TDR.
+
+**Fix:** force synchronous present — `m_SynchExecution = TRUE;` (one line). The sync path does a
+straight CPU blt into our framebuffer and returns `STATUS_SUCCESS` (no `ReportPresentProgress`,
+no interrupt dependency — see `blthw.cxx` `if (ctx->SynchExecution) { ; }`). This is also exactly
+what the Qubes grant path wants (synchronous per-frame copy).
+
+### `QbLog` DDI-trace progression (the empirical proof)
+
+```
+before fix #1:  ... QueryChildRelations, QueryAdapterInfo   <-- dies (DRIVERCAPS size check)
+after  fix #1:  ... CommitVidPn, SetVidPnSourceVisibility, PresentDisplayOnly  <-- then TDR
+after  fix #2:  ... PresentDisplayOnly x N (steady state)   <-- CM_PROB_NONE, active @1920x1080
+```
+
+### Mechanics that mattered
+
+- **Build host:** EWDK 28000 ISO mounted at `D:` (`C:\dev\ewdk.iso`); `build-kmdod.cmd`.
+- **Binary swap:** `System32\drivers\*.sys` are TrustedInstaller-owned — even elevated admins get
+  Access Denied on a direct copy; use `pnputil`, or `takeown`+`icacls`+copy. `pnputil /add-driver
+  /install` is a **no-op if the DriverVer isn't newer** ("up-to-date on device").
+- **Re-test without a full reboot:** `pnputil /disable-device "<instanceid>"` → swap `.sys` → clear
+  `HKLM\SYSTEM\CCS\Services\KDODSamp\Qb` → `pnputil /enable-device` reloads the driver.
+- **Signing:** the EWDK auto-test-sign cert (`CN="WDKTestCert user,…"`) must be in **LocalMachine
+  Root + TrustedPublisher** (`certutil -addstore -f`) or driver-install shows a publisher prompt;
+  test-signing already on.
+
+### Remaining work (was "blocked", now just engineering)
+
+1. **Dynamic resolution** matching the dom0 window — the KMDOD currently advertises a fixed
+   standard mode list (`bdd_dmm.cxx C_SampleSourceMode[]`) capped at the 1920×1080 framebuffer;
+   make it advertise the requested W×H and re-allocate the primary so the existing gui-agent
+   `RequestResolutionChange → ChangeDisplaySettings` snaps the guest to the exact dom0-window size.
+2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
+   replacing the gui-agent's DXGI capture.
+
+> **License:** the KMDOD is the MS-PL `video/KMDOD` sample (reference only) — its source stays
+> **out of this GPL-2 repo**; only the recipe above (two changes + the build/install mechanics) is
+> recorded. The upstreamable Qubes driver is original GPL-2 code studying this plus
+> `qxl-wddm-dod`/`viogpudo`.
+
+---
+
 ## ⚠️ VERDICT (2026-06) — IddCx cannot load on this HVM; supersedes F1/F4
 
 After taking the IddCx fork all the way to a clean build + correct install, **the
@@ -351,6 +455,16 @@ dynamic-resolution design (M4-K) carry over unchanged.
 ---
 
 ## ⛔ FINAL VERDICT — a custom WDDM display driver is NOT achievable on this Qubes/Xen Win10 HVM
+
+> **🚫 SUPERSEDED / WRONG (2026-06-20).** This verdict is **overturned** — see
+> "✅ BREAKTHROUGH" at the top of this file. Route #2 (KMDOD) **works**: the
+> `problem=43` was *not* a platform rejection but two newer-WDK-vs-older-OS build
+> bugs (a `DXGK_DRIVERCAPS` struct-size mismatch and an async-present TDR), both
+> now fixed; the KMDOD is the live active 1920×1080 display on the test clone. The
+> error below was concluding "platform wall" while overlooking that the inbox
+> `BasicDisplay.sys` is itself a working WDDM display-only miniport on the same
+> stdvga, and never applying the IddCx **F1** version-gate lesson to the kernel
+> driver. Kept for the record (routes #1/#3/#4 analysis is still accurate).
 
 After exhaustive investigation, **all four viable routes are walled off by the platform**, not by our code:
 
