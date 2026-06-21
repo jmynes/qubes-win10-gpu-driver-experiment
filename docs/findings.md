@@ -163,11 +163,38 @@ is the discrete grid; the proper fix is pixel-exact resolution (below). A driver
 grid (smaller overshoot). A cleaner gui-agent-side partial: make `SelectSupportedMode` prefer the
 largest mode **≤** the request (snap *down* → small gap, never covers the panel).
 
+### ✅ Pixel-exact engine — DONE via a `DxgkDdiEscape`, NO gui-agent cross-build needed
+
+The "pixel-exact needs a gui-agent rebuild" assumption was sidestepped. The clean UM↔KM channel is
+**`D3DKMTEscape` / `DxgkDdiEscape`** (the KMDOD's `KMDDOD_INITIALIZATION_DATA` has a first-class but
+unused `DxgkDdiEscape` slot — a separate `IoCreateDevice` control device would fight dxgkrnl for the
+driver object). The UM side uses only `D3DKMT*` from **gdi32 — zero Qubes deps** — so the whole
+qubes-builderv2 Windows cross-build (which needs the vchan/qubesdb/xencontrol/Xen chain built from
+source; no prebuilt DLLs in the installed Tools) is **avoided**.
+
+Driver changes (`bdd_ddi.cxx` wire `InitialData.DxgkDdiEscape=BddDdiEscape` + thunk; `bdd.hxx` members
+`m_QbFrameBuffer/Size/MaxW/MaxH/m_ChildConnected` + `Escape`/`SetPreferredMode` decls; `bdd.cxx`
+fixed-max contiguous primary, `Escape` validates a `QB_SETPREFERREDMODE_ESCAPE`, `SetPreferredMode`
+repoints `DispInfo` to the exact W×H **within** the buffer then does a synthetic monitor hotplug
+`DxgkCbIndicateChildStatus(Connected=FALSE→75ms→TRUE)`; `QueryChildStatus` reports `m_ChildConnected`
+so the FALSE half actually unplugs). Shared `QB_SETPREFERREDMODE_ESCAPE` struct in `um/qb_escape.h`.
+Key: `D3DDDI_ESCAPEFLAGS.HardwareAccess=0` (virtualization). Built clean with EWDK 28000.
+
+**PROVEN** (`um/set-res.c`, run interactively via a scheduled task since session-0 qrexec can't drive
+the desktop): `set-res 1600 852` → `escape=0 statusOut=0; mode 1600x852 advertised: YES;
+ChangeDisplaySettings=0`. An **arbitrary non-grid resolution was set pixel-exact** — the engine works.
+
 ### Remaining work
 
-1. **Pixel-exact dynamic resolution** (also fixes the panel overshoot) — driver `SetPreferredMode`
-   IOCTL + dynamic mode + `DxgkCbIndicateChildStatus` re-enum, and the matching gui-agent patch
-   (rebuild `qubes-gui-agent-windows`) so it requests the exact work-area W×H. See above.
+1. **Resolution corrector helper** (`um/`, plain VS, no Qubes deps) — tail the gui-agent log
+   (`Q:\Qubes Logs\gui-agent-*.log`) for `ResolutionChangeThread: resolution change: WxH` (the gui-agent's
+   *raw* requested work-area size, before its area-Jaccard snap), debounce, and apply that exact W×H via
+   the escape (`set-res` logic). Runs in the user's interactive session (scheduled task at logon).
+   Because `SetPreferredMode` shrinks `DispInfo`, the gui-agent's subsequent snap-*up* to a larger grid
+   mode hits `DISP_CHANGE_BADMODE` and the exact value persists (loop-broken in the common case;
+   track last-set + debounce to be safe). This gives Win7-parity panel-aware maximize with no rebuild.
+   *(Alt: pre-load the 3 monitors' exact work-area sizes into the driver + restart the gui-agent so its
+   own startup-cached snap lands exact — cleaner but hardcoded to this monitor/panel layout.)*
 2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
    replacing the gui-agent's DXGI capture.
 
