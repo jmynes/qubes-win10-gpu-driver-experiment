@@ -65,6 +65,27 @@ Sibling docs:
 > it regardless. My earlier "WARP sizes to 16 / affinity relocates-not-reduces"
 > explanation was wrong — the proven attribution is the un-pinnable kernel/`System`(4)
 > graphics stack.)
+>
+> **✅ ETW manifest-provider trace — the kernel hotspot NAMED: `win32k` User critical
+> section.** `SampledProfile`/PMU is unavailable in this Xen HVM (no profiling timer), and
+> the graphics work runs on generic `ntoskrnl` worker threads (so CSwitch start-address
+> attribution can't see it; DPCs are all storage/net — `storport`/`xenvbd`/`tcpip`). But a
+> `logman` capture of the **`Microsoft-Windows-DxgKrnl` + `Microsoft-Windows-Win32k`**
+> providers during a drag (`groupsize` off) is decisive — events decoded via `wevtutil`,
+> all spread across **all 16 LPs**:
+>   - **`win32k.sys`** dominates: `ReleaseUserCrit` (**22,782**), `SharedUserCrit`
+>     (12,058), `ExclusiveUserCrit` (10,724) — i.e. **~45k acquire/release of the global
+>     win32k User/GDI critical section across all 16 CPUs** in ~15s. Plus `GdiHandleOperation`.
+>   - **`dxgkrnl.sys`** alongside: `QueuePacket`/`UpdateContextRunningTime`/`UpdateContextStatus`/
+>     `Profiler` (~30k events, 16 CPUs) — the WDDM GPU-scheduler context path.
+>
+> So the concrete >2-LP hotspot is **`win32k`'s User critical section** (the lock
+> serializing User/GDI/composition state) contended across all 16 LPs during composition,
+> with the `dxgkrnl` WDDM scheduler running beside it — all un-pinnable `System`(4) kernel
+> work. This is exactly why capping to a **2-LP group** (`groupsize 2` / ≤2 vCPUs) cures it
+> and no per-process affinity can. (Manifest providers show it's the 16-LP *hotspot*;
+> proving the precise data race vs. lock-serialization bug would need a live KD, which is
+> blocked here — see route 3 of the old verdict.)
 > (Distinct bug from the vchan-under-load **freeze** that M2-K's native grant path
 > partially mitigates — neither fixes the other.)
 
