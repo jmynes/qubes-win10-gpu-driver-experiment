@@ -48,10 +48,23 @@ Sibling docs:
 > 8 groups, processes round-robined `dwm`→g1, `explorer`→g4, `gui-agent`→g2). So
 > `groupsize 2` (or ≤2 vCPUs) stays required; the real fix is a **GPU** (passthrough
 > now, or **virtio-gpu** if/when Xen/libxl supports it) so WARP/`BasicRender` isn't used
-> at all. (The user-vs-kernel split *within* those buckets is still **inferred** — a
-> GPUView/WPA ETW capture of a drag with `groupsize` off would name the racer by showing
-> which threads are concurrently hot on >2 LPs; the earlier "WARP sizes to 16" and
-> "it's purely kernel" framings were **both wrong**.)
+> at all.
+>
+> **✅ Differential test — kernel attribution now EMPIRICALLY PROVEN (not inferred).**
+> With `groupsize` off (16 LPs), a background loop held **every** WARP-hosting user
+> process pinned to 2 CPUs (`0x3`) and re-pinned respawns — verified live: `dwm`,
+> `explorer`, `gui-agent`, `SearchApp`, `PhoneExperienceHost`, `TextInputHost`,
+> `StartMenuExperienceHost`, `M365Copilot`, `msedgewebview2`, `SystemSettings`,
+> `ApplicationFrameHost` all at `aff=0x3` simultaneously. **The corruption STILL
+> reproduced on drag (user-observed).** So it survives total user-mode WARP confinement
+> → the racer is the **un-pinnable kernel graphics threads/DPCs in `System` (PID 4)**
+> (dxgkrnl/dxgmms2/BasicRender/win32k), which run on all LPs and are bounded only by
+> processor groups. This settles "is it exactly `dwm`?" → **definitively no — it's not
+> any user process at all.** (Whether user-mode WARP *also* contributes when unpinned is
+> left moot: the kernel threads alone are un-pinnable, so no per-process affinity can fix
+> it regardless. My earlier "WARP sizes to 16 / affinity relocates-not-reduces"
+> explanation was wrong — the proven attribution is the un-pinnable kernel/`System`(4)
+> graphics stack.)
 > (Distinct bug from the vchan-under-load **freeze** that M2-K's native grant path
 > partially mitigates — neither fixes the other.)
 
