@@ -139,11 +139,35 @@ mode list is.
   the OS to re-enumerate that exact mode, **plus** a gui-agent patch to call it before
   `ChangeDisplaySettings` (and not snap); or (b) a very fine mode grid. (a) is the M4-K design.
 
+### Framebuffer cap lifted — guest now follows the window ABOVE 1080p
+
+The primary was fixed at 1920×1080 and `AddSingleSourceMode` bounds the grid by it, so the guest
+could only shrink, never grow past 1080p (host here is **5120×2520** — Qubes' bounding box of the
+user's 2×1440p + 1×1080p layout). Fix: `StartDevice` (`bdd.cxx`) now allocates the primary via a
+**fallback chain** `{3840×2160, 2560×1600, 2560×1440, 1920×1200, 1920×1080}` — `MmAllocate
+ContiguousMemory` the largest that succeeds (contiguous; a full 5120×2520 = ~52MB contiguous is
+impractical and unneeded for single-monitor use), set `DispInfo` to it → the grid extends to that
+max. Grid step bumped 48→**96** so the mode count stays safe over the bigger range (~365 at 4K).
+**Reboot before the hot-swap** so the large contiguous alloc lands on fresh memory (and disable the
+device first — `System32\drivers\*.sys` is locked while loaded). Verified: guest reached **2560×1416**
+following a maximize (was hard-capped at 1080p). EWDK `D:` can silently unmount between builds → if
+`build-kmdod.cmd` logs `'msbuild' is not recognized`, re-`Mount-DiskImage C:\dev\ewdk.iso`.
+
+### Open issue — maximize overshoots the xfce4-panel (grid snap-up)
+
+On maximize, XFCE requests the **work-area** size (monitor − panel struts, e.g. **2560×1377**), but the
+gui-agent's `SelectSupportedMode` (`resolution.c:118`) snaps it to the nearest *enumerated* mode by
+area-Jaccard, which favors the slightly-**larger** one (2560×1377 → **2560×1416**, +39px). The guest
+desktop then exceeds the work area and **covers the panel** — unlike the Win7/qvideo qube. Root cause
+is the discrete grid; the proper fix is pixel-exact resolution (below). A driver-only partial: finer
+grid (smaller overshoot). A cleaner gui-agent-side partial: make `SelectSupportedMode` prefer the
+largest mode **≤** the request (snap *down* → small gap, never covers the panel).
+
 ### Remaining work
 
-1. **Pixel-exact dynamic resolution** — driver `SetPreferredMode` IOCTL + dynamic mode +
-   `DxgkCbIndicateChildStatus` re-enum, and the matching gui-agent patch (rebuild
-   `qubes-gui-agent-windows`). See above.
+1. **Pixel-exact dynamic resolution** (also fixes the panel overshoot) — driver `SetPreferredMode`
+   IOCTL + dynamic mode + `DxgkCbIndicateChildStatus` re-enum, and the matching gui-agent patch
+   (rebuild `qubes-gui-agent-windows`) so it requests the exact work-area W×H. See above.
 2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
    replacing the gui-agent's DXGI capture.
 
