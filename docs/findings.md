@@ -184,17 +184,31 @@ Key: `D3DDDI_ESCAPEFLAGS.HardwareAccess=0` (virtualization). Built clean with EW
 the desktop): `set-res 1600 852` → `escape=0 statusOut=0; mode 1600x852 advertised: YES;
 ChangeDisplaySettings=0`. An **arbitrary non-grid resolution was set pixel-exact** — the engine works.
 
+### ⚠️ The escape/hotplug pixel-exact path CRASHES — use the stable fine-height grid instead
+
+The corrector + escape gave true pixel-exact, but **`SetPreferredMode`'s per-change synthetic
+hotplug (`DxgkCbIndicateChildStatus` FALSE→TRUE) freezes the qube after ~3 changes** (needs
+`qvm-kill`): each hotplug makes the gui-agent's **DXGI Desktop-Duplication lose its surface
+(`DXGI_ERROR_ACCESS_LOST`) and re-init**, and a few of those in a row trip the known WARP/vchan
+freeze. Empirically confirmed the hard wall: **without the hotplug, `ChangeDisplaySettings` rejects
+any non-enumerated mode (`DISP_CHANGE_BADMODE`)** — so per-pixel-exact (needs a per-change re-enum)
+and stability (no hotplug) are mutually exclusive on this stack. The escape DDI + `um/set-res.c` /
+`um/qb-resd.c` are kept **dormant** (revivable via the CCD `SetDisplayConfig` path — see below).
+
+**Stable solution (shipped) — fine-height grid, enumerated once at startup, NO hotplug.** A maximize
+or tile requests *full-or-half width × (full height − panel)*, so `AddSingleSourceMode` (`bdd_dmm.cxx`)
+pre-advertises **8px-stepped heights near each monitor's full height**, at both **full and half
+monitor widths** (full = maximize; half = XFCE `tile_left/right_key`, Super+←/→). The gui-agent's
+own snap then lands **within ~4px** of the work area (biased *under* → panel stays visible). Fully
+stable across many resizes. Not literally pixel-exact (±~4px, imperceptible). `QbMon[]` lists the
+monitor (w, full-height) pairs — extend it for other monitor sizes / tile layouts.
+
 ### Remaining work
 
-1. **Resolution corrector helper** (`um/`, plain VS, no Qubes deps) — tail the gui-agent log
-   (`Q:\Qubes Logs\gui-agent-*.log`) for `ResolutionChangeThread: resolution change: WxH` (the gui-agent's
-   *raw* requested work-area size, before its area-Jaccard snap), debounce, and apply that exact W×H via
-   the escape (`set-res` logic). Runs in the user's interactive session (scheduled task at logon).
-   Because `SetPreferredMode` shrinks `DispInfo`, the gui-agent's subsequent snap-*up* to a larger grid
-   mode hits `DISP_CHANGE_BADMODE` and the exact value persists (loop-broken in the common case;
-   track last-set + debounce to be safe). This gives Win7-parity panel-aware maximize with no rebuild.
-   *(Alt: pre-load the 3 monitors' exact work-area sizes into the driver + restart the gui-agent so its
-   own startup-cached snap lands exact — cleaner but hardcoded to this monitor/panel layout.)*
+1. **Truly-exact + stable (optional)** — try the CCD `SetDisplayConfig` API instead of
+   `ChangeDisplaySettings`: it may commit an arbitrary source mode through the VidPn DDIs (the driver
+   already accepts it via the dormant `m_PreferredWidth/Height` path in `AddSingleSourceMode`) **without
+   a hotplug** — which would give 0px-exact with no DXGI churn / freeze. Unverified.
 2. **Native frame path** (M2-K) — grant the primary's pages to dom0 over `XcGnttab` + IOCTL,
    replacing the gui-agent's DXGI capture.
 
