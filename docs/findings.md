@@ -27,15 +27,31 @@ Sibling docs:
 >
 > **Why a targeted CPU-affinity pin can't replace it (tested, fails):** pinning
 > `dwm.exe` to 2 CPUs via `ProcessorAffinity` — both on the running process *and*
-> killed + re-pinned at respawn (so it comes up with the affinity set) — does **NOT**
-> clear the corruption (user-observed, `groupsize` off, 16 vCPUs). WARP sizes its
-> compositor thread pool to the **visible logical-CPU count (16)**, not the process
-> affinity mask; affinity only relocates those threads, it doesn't reduce them, and
-> the race is thread-*count* driven. Only processor **groups** (`groupsize`), ≤2
-> vCPUs, or a real GPU (so WARP isn't used at all) shrink the count. There is also
-> only one `dwm.exe`; the two `csrss.exe` are protected (can't pin). So the **global
-> `groupsize 2` boot flag is genuinely the only software lever** — the real fix is a
-> GPU: **passthrough** today, or **virtio-gpu** if/when Xen/libxl supports it.
+> killed + re-pinned at respawn — does **NOT** clear the corruption (user-observed,
+> `groupsize` off, 16 vCPUs). A workflow probe (parallel research + an adversarial
+> verifier that ran live on the qube) showed the dwm-only pin is **fatally incomplete**
+> and the racer is **not "exactly `dwm`"** — it's the whole GPU-less software
+> render/composite pipeline, in two buckets that no single per-process pin can cover:
+>   1. **WARP** (`d3d10warp.dll`) runs its own multi-core thread pool in **many user
+>      processes at once** — verified resident in `dwm`, `explorer`, the Qubes
+>      `gui-agent`, `SearchApp`, `ApplicationFrameHost`, modern/DComp apps … — each
+>      spreading across all LPs in its own address space, so pinning only `dwm` leaves
+>      every sibling WARP pool free to race on >2 LPs.
+>   2. The **WDDM kernel graphics stack** (`dxgkrnl`/`dxgmms2`/`BasicRender`/`win32k`):
+>      worker threads + DPCs hosted in **System (PID 4)**, which returns *"Access is
+>      denied"* to a user-mode affinity set and is group-scheduled only.
+>
+> No per-process knob (`ProcessorAffinity`, `SetThreadGroupAffinity`, a Job object,
+> IFEO) reaches System(4)/kernel DPCs or the protected `csrss`. `groupsize 2` is the
+> **only** software lever because it caps **every** per-process WARP pool *and* the
+> un-pinnable System/kernel threads into 2-LP groups **system-wide** (confirmed active:
+> 8 groups, processes round-robined `dwm`→g1, `explorer`→g4, `gui-agent`→g2). So
+> `groupsize 2` (or ≤2 vCPUs) stays required; the real fix is a **GPU** (passthrough
+> now, or **virtio-gpu** if/when Xen/libxl supports it) so WARP/`BasicRender` isn't used
+> at all. (The user-vs-kernel split *within* those buckets is still **inferred** — a
+> GPUView/WPA ETW capture of a drag with `groupsize` off would name the racer by showing
+> which threads are concurrently hot on >2 LPs; the earlier "WARP sizes to 16" and
+> "it's purely kernel" framings were **both wrong**.)
 > (Distinct bug from the vchan-under-load **freeze** that M2-K's native grant path
 > partially mitigates — neither fixes the other.)
 
